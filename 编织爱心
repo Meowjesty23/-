@@ -1,0 +1,175 @@
+import pygame
+import math
+import random
+
+*/ 初始化 
+pygame.init()
+WIDTH, HEIGHT = 800, 800
+screen = pygame.display.set_mode((WIDTH, HEIGHT))
+pygame.display.set_caption("光轨编织爱心")
+clock = pygame.time.Clock()
+
+TIPX, TIPY = WIDTH // 2, 625      # 所有轨道共用的底部尖端
+HS = 218                          # 心形尺度
+TRACKS = 260                      # 轨道（弧线）条数
+
+*/ 基础心形参数方程（屏幕坐标：y 向下） 
+def heart(t):
+    x = 16 * math.sin(t) ** 3
+    y = -(13 * math.cos(t) - 5 * math.cos(2*t) - 2 * math.cos(3*t) - math.cos(4*t))
+    return x / 16.0, y / 16.0
+
+# 尖端在 t = π 处
+TIP_NX, TIP_NY = heart(math.pi)
+
+*/配色 
+def track_color(k):
+    """k: 0=粉紫(下/内) -> 1=白亮(上/外)"""
+    k = max(0.0, min(1.0, k))
+    pink = (215, 130, 235)
+    lilac = (180, 160, 255)
+    white = (245, 240, 255)
+    if k < 0.5:
+        a = k / 0.5
+        return tuple(int(pink[i]*(1-a) + lilac[i]*a) for i in range(3))
+    a = (k - 0.5) / 0.5
+    return tuple(int(lilac[i]*(1-a) + white[i]*a) for i in range(3))
+*/一族「共用尖端」的扰动心形轨道
+class Track:
+    def __init__(self):
+        # 每条轨道形状略有不同：横向/纵向缩放 + 轻微旋转 + 整体大小
+        self.sx = random.uniform(0.76, 1.24)
+        self.sy = random.uniform(0.86, 1.14)
+        self.rot = random.gauss(0, 0.09)
+        # 少量轨道更大，形成边缘向外飞散的长弧
+        self.sc = random.uniform(1.14, 1.34) if random.random() < 0.16 \
+                  else random.uniform(0.82, 1.10)
+        self.cos_r, self.sin_r = math.cos(self.rot), math.sin(self.rot)
+        self.k = random.random() ** 0.7             # 决定色调（偏白亮一些）
+        self.color = track_color(self.k)
+        # 每条轨道上跑 1~2 个光点
+        self.dots = []
+        for _ in range(random.choice([1, 1, 2])):
+            self.dots.append({
+                "t": random.uniform(0, 2*math.pi),
+                "v": random.uniform(0.012, 0.030) * random.choice([1, -1]),
+                "bright": random.uniform(0.75, 1.0),
+            })
+
+    def point(self, t):
+        nx, ny = heart(t)
+        # 以尖端为原点
+        px, py = nx - TIP_NX, ny - TIP_NY
+        px *= self.sx * self.sc * HS
+        py *= self.sy * self.sc * HS
+        # 旋转
+        rx = px * self.cos_r - py * self.sin_r
+        ry = px * self.sin_r + py * self.cos_r
+        return TIPX + rx, TIPY + ry
+
+    def update_draw(self):
+        for d in self.dots:
+            t0 = d["t"]
+            steps = 5
+            pts = []
+            for s in range(steps + 1):
+                pts.append(self.point(t0 + d["v"] * s))
+            d["t"] += d["v"] * steps
+            # 画这一小段细弧线（fade 残影会把它们留成整条长弧）
+            c = tuple(int(v * d["bright"]) for v in self.color)
+            for i in range(steps):
+                pygame.draw.line(screen, c, pts[i], pts[i+1], 1)
+            # 光点头部
+            hx, hy = pts[-1]
+            pygame.draw.circle(screen, (255, 250, 255), (int(hx), int(hy)), 1)
+*/沿轨道慢慢游走的发光珠
+class Bead:
+    def __init__(self, track):
+        self.tr = track
+        self.t = random.uniform(0, 2*math.pi)
+        self.v = random.uniform(0.004, 0.012) * random.choice([1, -1])
+        self.r = random.uniform(1.6, 3.2)
+        self.phase = random.uniform(0, 2*math.pi)
+
+    def update_draw(self):
+        self.t += self.v
+        self.phase += 0.05
+        px, py = self.tr.point(self.t)
+        c = self.tr.color
+        pulse = 0.8 + 0.2 * math.sin(self.phase)
+        core = tuple(int(v * pulse + 255 * (1-pulse) * 0.4) for v in c)
+        pygame.draw.circle(screen, core, (int(px), int(py)), int(self.r))
+        pygame.draw.circle(screen, (255, 252, 255), (int(px), int(py)), 1)
+
+*/尖端汇聚光晕 
+def draw_tip_glow(t):
+    # 只在汇聚点留一个小小的亮核，不画圆盘（避免累积成实心球）
+    pygame.draw.circle(screen, (255, 245, 255), (int(TIPX), int(TIPY)), 2)
+
+*/从尖端甩出的少量细射线 
+class Flick:
+    def __init__(self):
+        self.reset()
+    def reset(self):
+        self.angle = random.uniform(math.pi*1.05, math.pi*1.95)  # 向下/侧方
+        self.len = random.uniform(20, 90)
+        self.grown = 0
+        self.speed = random.uniform(2, 6)
+        self.life = 255
+    def update_draw(self):
+        if self.grown < self.len:
+            self.grown += self.speed
+        else:
+            self.life -= 10
+        if self.life <= 0:
+            self.reset()
+        k = max(0, self.life/255)
+        ex = TIPX + math.cos(self.angle) * self.grown
+        ey = TIPY + math.sin(self.angle) * self.grown
+        c = (int(190*k), int(160*k), int(235*k))
+        pygame.draw.line(screen, c, (TIPX, TIPY), (ex, ey), 1)
+        if k > 0.3:
+            pygame.draw.circle(screen, (235, 225, 255), (int(ex), int(ey)), 1)
+
+*/背景微点
+stars = [(random.randint(0, WIDTH), random.randint(0, HEIGHT),
+          random.randint(20, 60)) for _ in range(70)]
+
+*/ 主循环 
+tracks = [Track() for _ in range(TRACKS)]
+beads = [Bead(random.choice(tracks)) for _ in range(90)]
+flicks = [Flick() for _ in range(40)]
+start = pygame.time.get_ticks() / 1000.0
+running = True
+
+while running:
+    # 半透明黑底 -> 光轨残影（编织感的关键）
+    fade = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    fade.fill((0, 0, 0, 16))
+    screen.blit(fade, (0, 0))
+
+    t = pygame.time.get_ticks() / 1000.0 - start
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            running = False
+        elif event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            tracks = [Track() for _ in range(TRACKS)]
+            beads = [Bead(random.choice(tracks)) for _ in range(90)]
+            flicks = [Flick() for _ in range(40)]
+
+    for sx, sy, a in stars:
+        pygame.draw.circle(screen, (a, a, a+12), (sx, sy), 1)
+
+    draw_tip_glow(t)
+
+    for f in flicks:
+        f.update_draw()
+    for tr in tracks:
+        tr.update_draw()
+    for b in beads:
+        b.update_draw()
+
+    pygame.display.flip()
+    clock.tick(60)
+
+pygame.quit()
